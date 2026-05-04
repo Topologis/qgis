@@ -1,0 +1,17 @@
+[general]
+name=Topologis
+description=Publish QGIS layers to Topologis
+about=Adds a "Publish to Topologis" toolbar button that uploads selected vector layers to a Topologis project. Supports Point, Line, and Polygon layers; reprojection to EPSG:4326 is automatic.
+version=0.1.0
+qgisMinimumVersion=3.28
+author=Nikolay Dyankov
+email=
+category=Web
+icon=resources/icons/icon.png
+homepage=https://topologis.com
+tracker=https://github.com/topologis/topologis/issues
+repository=https://github.com/topologis/topologis
+tags=topologis,upload,publish,web,vector,export,geojson
+hasProcessingProvider=no
+experimental=True
+deprecated=False

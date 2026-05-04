@@ -1,0 +1,1 @@
+The Topologis name, wordmark, and logo are trademarks of Topologis VCC. They are not licensed under the GPL and may not be used to identify any product or service except those provided by Topologis, or in a way that suggests endorsement by Topologis.
