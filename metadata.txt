@@ -1,17 +1,24 @@
 [general]
 name=Topologis Exporter
-description=Publish QGIS layers to Topologis
-about=Adds a "Publish to Topologis" toolbar button that uploads selected vector layers to a Topologis project. Supports Point, Line, and Polygon layers; reprojection to EPSG:4326 is automatic.
-version=0.1.0
-qgisMinimumVersion=3.28
+description=Publish QGIS vector layers as interactive web maps you can share or embed
+about=Publish QGIS vector layers to Topologis as interactive web maps that you can share with clients or embed on a website. Adds a "Publish to Topologis" toolbar button. Supports Point, Line, and Polygon layers with automatic reprojection to EPSG:4326. After upload, style the layers in the Topologis editor and create shareable views. Viewers open links anonymously, no account required. Free trial, no credit card.
+version=1.0.0
+qgisMinimumVersion=3.20.0
+qgisMaximumVersion=4.99
 author=Nikolay Dyankov
-email=
+email=contact@topologis.com
 category=Web
 icon=resources/icons/icon.png
 homepage=https://topologis.com
-tracker=https://github.com/topologis/topologis/issues
-repository=https://github.com/topologis/topologis
-tags=topologis,upload,publish,web,vector,export,geojson
-hasProcessingProvider=no
-experimental=True
+tracker=https://github.com/Topologis/qgis-plugin/issues
+repository=https://github.com/Topologis/qgis-plugin
+tags=share map,share maps,web map,webmap,online map,interactive map,embed,publish,upload,export,cloud,sharing,viewer,topologis
+hasProcessingProvider=False
+experimental=False
 deprecated=False
+changelog=
+ 1.0.0
+ - Initial release
+ - Paste Topologis token in the plugin UI
+ - Choose which layers to export
+ - Choose if you wish to create new layers, or replace contents from a previous import

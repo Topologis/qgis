@@ -16,27 +16,40 @@ from qgis.core import (
     QgsProject,
     QgsSettings,
     QgsVectorLayer,
-    QgsWkbTypes,
 )
-from qgis.PyQt.QtCore import Qt, pyqtSignal
+from qgis.PyQt.QtCore import pyqtSignal
 from qgis.PyQt.QtGui import QPixmap
 from qgis.PyQt.QtWidgets import (
-    QAbstractItemView,
     QApplication,
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QLineEdit,
     QProgressBar,
-    QStyle,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
 )
 
+from ..compat import (
+    QABSTRACT_NO_EDIT_TRIGGERS,
+    QABSTRACT_NO_SELECTION,
+    QDIALOG_ACCEPT_ROLE,
+    QDIALOG_CANCEL,
+    QHEADER_RESIZE_TO_CONTENTS,
+    QHEADER_STRETCH,
+    QSTYLE_WARNING_ICON,
+    QT_ALIGN_LEFT,
+    QT_CHECKED,
+    QT_ITEM_IS_ENABLED,
+    QT_ITEM_IS_USER_CHECKABLE,
+    QT_NO_ITEM_FLAGS,
+    QT_UNCHECKED,
+    QT_USER_ROLE,
+    is_supported_vector_geometry_type,
+)
 from ..core.export_task import ExportTask
 
 
@@ -50,14 +63,8 @@ _ICON_FALLBACK_PATH = os.path.join(_PLUGIN_DIR, "resources", "icons", "icon.png"
 # generate an import token from a Topologis project's settings.
 DOCS_TOKEN_URL = "https://topologis.com/docs/topologis-app/import-data#qgis"
 
-# We can only export vector layers with simple Point/Line/Polygon geometry;
-# raster layers, mesh layers, and unknown geometry types are listed in the
-# UI but disabled. The set is checked against ``QgsVectorLayer.geometryType()``.
-SUPPORTED_GEOMETRY_TYPES = {
-    QgsWkbTypes.PointGeometry,
-    QgsWkbTypes.LineGeometry,
-    QgsWkbTypes.PolygonGeometry,
-}
+# We can only export vector layers with simple Point/Line/Polygon geometry.
+# The helper handles QGIS 3/4 enum-family differences.
 UNSUPPORTED_WARNING = "layer doesn't contain Polygon/Line/Point geometry"
 
 # QGIS persists the import token in QSettings between sessions so users
@@ -92,7 +99,7 @@ class TopologisExportDialog(QDialog):
         logo_path = _LOGO_PATH if os.path.exists(_LOGO_PATH) else _ICON_FALLBACK_PATH
         logo_label = QLabel(self)
         logo_label.setPixmap(QPixmap(logo_path).scaledToHeight(32))
-        logo_label.setAlignment(Qt.AlignLeft)
+        logo_label.setAlignment(QT_ALIGN_LEFT)
         logo_label.setContentsMargins(0, 0, 0, 10)
         layout.addWidget(logo_label)
 
@@ -102,12 +109,12 @@ class TopologisExportDialog(QDialog):
         self.layer_table.setColumnCount(2)
         self.layer_table.setHorizontalHeaderLabels(["Layer", "Operation"])
         self.layer_table.verticalHeader().setVisible(False)
-        self.layer_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.layer_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.layer_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.layer_table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.layer_table.horizontalHeader().setSectionResizeMode(0, QHEADER_STRETCH)
+        self.layer_table.horizontalHeader().setSectionResizeMode(1, QHEADER_RESIZE_TO_CONTENTS)
+        self.layer_table.setEditTriggers(QABSTRACT_NO_EDIT_TRIGGERS)
+        self.layer_table.setSelectionMode(QABSTRACT_NO_SELECTION)
         self.layer_table.setShowGrid(False)
-        warning_icon = QApplication.style().standardIcon(QStyle.SP_MessageBoxWarning)
+        warning_icon = QApplication.style().standardIcon(QSTYLE_WARNING_ICON)
 
         # Sort supported (checkable) layers to the top so they're easier to
         # find when a project has dozens of unsupported raster/mesh layers.
@@ -120,12 +127,12 @@ class TopologisExportDialog(QDialog):
             # Stash the layer ID rather than a reference: layers can be
             # removed from the project while the dialog is open and we want
             # to fail gracefully when that happens.
-            item.setData(Qt.UserRole, layer.id())
+            item.setData(QT_USER_ROLE, layer.id())
             if _is_supported(layer):
                 item.setFlags(
-                    Qt.ItemIsUserCheckable | Qt.ItemIsEnabled
+                    QT_ITEM_IS_USER_CHECKABLE | QT_ITEM_IS_ENABLED
                 )
-                item.setCheckState(Qt.Unchecked)
+                item.setCheckState(QT_UNCHECKED)
                 self.layer_table.setItem(row, 0, item)
 
                 combo = QComboBox(self.layer_table)
@@ -137,7 +144,7 @@ class TopologisExportDialog(QDialog):
                 self.layer_table.setCellWidget(row, 1, combo)
             else:
                 # Disable the row entirely - tooltip explains why.
-                item.setFlags(Qt.NoItemFlags)
+                item.setFlags(QT_NO_ITEM_FLAGS)
                 item.setIcon(warning_icon)
                 item.setToolTip(UNSUPPORTED_WARNING)
                 self.layer_table.setItem(row, 0, item)
@@ -188,10 +195,10 @@ class TopologisExportDialog(QDialog):
         # ---- Buttons --------------------------------------------------------
         # Use a single button box that flips between "Close" (idle) and
         # "Cancel Export" (running). Avoids a layout shift mid-flow.
-        self.buttons = QDialogButtonBox(QDialogButtonBox.Cancel, parent=self)
-        self.cancel_button = self.buttons.button(QDialogButtonBox.Cancel)
+        self.buttons = QDialogButtonBox(QDIALOG_CANCEL, parent=self)
+        self.cancel_button = self.buttons.button(QDIALOG_CANCEL)
         self.cancel_button.setText("Close")
-        self.export_button = self.buttons.addButton("Export", QDialogButtonBox.AcceptRole)
+        self.export_button = self.buttons.addButton("Export", QDIALOG_ACCEPT_ROLE)
         self.buttons.rejected.connect(self._on_cancel_clicked)
         self.export_button.clicked.connect(self._on_export)
         layout.addWidget(self.buttons)
@@ -304,9 +311,9 @@ class TopologisExportDialog(QDialog):
         selected = []
         for row in range(self.layer_table.rowCount()):
             item = self.layer_table.item(row, 0)
-            if item is None or item.checkState() != Qt.Checked:
+            if item is None or item.checkState() != QT_CHECKED:
                 continue
-            layer = project.mapLayer(item.data(Qt.UserRole))
+            layer = project.mapLayer(item.data(QT_USER_ROLE))
             if layer is None:
                 continue
             combo = self.layer_table.cellWidget(row, 1)
@@ -320,7 +327,7 @@ class TopologisExportDialog(QDialog):
             return
         combo = self.layer_table.cellWidget(item.row(), 1)
         if combo is not None:
-            combo.setEnabled(item.checkState() == Qt.Checked)
+            combo.setEnabled(item.checkState() == QT_CHECKED)
 
     def _update_token_info(self):
         """Refresh the muted line under the token field with project + expiry."""
@@ -370,7 +377,7 @@ def _is_supported(layer) -> bool:
     we know how to export."""
     return (
         isinstance(layer, QgsVectorLayer)
-        and layer.geometryType() in SUPPORTED_GEOMETRY_TYPES
+        and is_supported_vector_geometry_type(layer.geometryType())
     )
 
 

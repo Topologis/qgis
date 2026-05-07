@@ -20,6 +20,8 @@ we never touch the GUI directly - the dialog connects to the
 
 import os
 import tempfile
+import traceback
+import urllib.parse
 from typing import List, Optional, Tuple
 
 from qgis.core import (
@@ -32,13 +34,40 @@ from qgis.core import (
 )
 from qgis.PyQt.QtCore import pyqtSignal
 
+from ..compat import QGSTASK_CAN_CANCEL, QGSVECTOR_WRITER_NO_ERROR
 from .config import API_URL
+from .debug import debug_log
 from .http_client import Cancelled, post_json, put_file_with_progress
 
 
 # All Topologis layers are stored in WGS84 lon/lat. Any other layer CRS is
 # transformed on write so the server doesn't have to guess.
 _TARGET_CRS = "EPSG:4326"
+
+
+def _debug_body(body):
+    if not isinstance(body, dict):
+        return body
+
+    redacted = dict(body)
+    urls = redacted.get("urls")
+    if isinstance(urls, list):
+        redacted["urls"] = [_debug_entry(entry) for entry in urls]
+    return redacted
+
+
+def _debug_entry(entry):
+    if not isinstance(entry, dict):
+        return entry
+
+    redacted = dict(entry)
+    url = redacted.get("url")
+    if isinstance(url, str):
+        parsed = urllib.parse.urlparse(url)
+        redacted["url"] = urllib.parse.urlunparse(
+            (parsed.scheme, parsed.netloc, parsed.path, "", "<redacted>", "")
+        )
+    return redacted
 
 
 class ExportTask(QgsTask):
@@ -58,7 +87,7 @@ class ExportTask(QgsTask):
     done = pyqtSignal()
 
     def __init__(self, token: str, layers: List[Tuple[QgsVectorLayer, str]]):
-        super().__init__("Topologis export", QgsTask.CanCancel)
+        super().__init__("Topologis export", QGSTASK_CAN_CANCEL)
         self._token = token
         # Each entry is ``(layer, op)`` where ``op`` is ``"add"`` or
         # ``"replace"`` and is forwarded to the create-import-job request.
@@ -87,19 +116,25 @@ class ExportTask(QgsTask):
             # presigned URL per layer. If the token is wrong we want to fail
             # fast, before writing any temp files.
             names = [layer.name() for layer, _op in self._layers]
+            debug_log(f"Starting export for {len(names)} layer(s): {names}")
             status, body = post_json(
                 f"{API_URL}/api/public/qgis-get-urls",
                 {"token": self._token, "names": names},
             )
+            debug_log(f"qgis-get-urls returned HTTP {status}: {_debug_body(body)}")
             if status != 200:
                 self.fatal_error = (
                     body.get("error") or f"Failed to get upload URLs (HTTP {status})"
                 )
+                debug_log(f"Fatal export error: {self.fatal_error}")
                 return False
 
             urls = body.get("urls", [])
             if len(urls) != len(self._layers):
                 self.fatal_error = "Server returned mismatched URL count"
+                debug_log(
+                    f"{self.fatal_error}: got {len(urls)}, expected {len(self._layers)}"
+                )
                 return False
 
             n = len(self._layers)
@@ -114,6 +149,7 @@ class ExportTask(QgsTask):
             return True
         except Exception as e:
             self.fatal_error = str(e)
+            debug_log(f"Fatal export exception:\n{traceback.format_exc()}")
             return False
 
     def finished(self, result: bool):
@@ -143,6 +179,10 @@ class ExportTask(QgsTask):
         layer_name = entry.get("layerName") or layer.name()
         safe_name = entry.get("safeName")
         url = entry.get("url")
+        debug_log(
+            f"Processing layer {i + 1}/{n}: name={layer.name()!r}, "
+            f"server_name={layer_name!r}, op={op!r}, safeName={safe_name!r}"
+        )
 
         # Initial "preparing" tick so the UI updates immediately when we
         # advance to the next layer, even before the GeoJSON write finishes.
@@ -152,6 +192,10 @@ class ExportTask(QgsTask):
         tmp_path: Optional[str] = None
         try:
             tmp_path = self._write_geojson(layer)
+            debug_log(
+                f"Wrote GeoJSON for {layer_name!r}: {tmp_path} "
+                f"({os.path.getsize(tmp_path)} bytes)"
+            )
 
             self.progressUpdated.emit(i + 1, n, layer_name, 0, "uploading")
 
@@ -171,6 +215,7 @@ class ExportTask(QgsTask):
                 f"{API_URL}/api/public/qgis-create-import-job",
                 {"token": self._token, "safeName": safe_name, "op": op},
             )
+            debug_log(f"qgis-create-import-job for {layer_name!r} returned HTTP {status}: {body}")
             if status != 200:
                 self.summary.append({
                     "layerName": layer_name,
@@ -182,8 +227,10 @@ class ExportTask(QgsTask):
             self.summary.append({"layerName": layer_name, "ok": True, "error": None})
         except Cancelled:
             # Propagate so run() can stop the outer loop and return cleanly.
+            debug_log(f"Export cancelled while processing {layer_name!r}")
             raise
         except Exception as e:
+            debug_log(f"Layer export exception for {layer_name!r}:\n{traceback.format_exc()}")
             self.summary.append({"layerName": layer_name, "ok": False, "error": str(e)})
         finally:
             # Always clean up the temp file - it can be tens or hundreds of
@@ -208,6 +255,10 @@ class ExportTask(QgsTask):
 
         target_crs = QgsCoordinateReferenceSystem(_TARGET_CRS)
         transform_context = QgsProject.instance().transformContext()
+        debug_log(
+            f"Writing layer {layer.name()!r}: source CRS={layer.crs().authid()}, "
+            f"target CRS={target_crs.authid()}, feature_count={layer.featureCount()}"
+        )
 
         options = QgsVectorFileWriter.SaveVectorOptions()
         options.driverName = "GeoJSON"
@@ -224,7 +275,7 @@ class ExportTask(QgsTask):
         # Result is a tuple ``(error_code, error_message, ...)``. Anything
         # other than ``NoError`` means the file on disk is unusable.
         error_code = result[0]
-        if error_code != QgsVectorFileWriter.NoError:
+        if error_code != QGSVECTOR_WRITER_NO_ERROR:
             error_msg = result[1] if len(result) > 1 else "GeoJSON write failed"
             raise RuntimeError(f"GeoJSON write failed: {error_msg}")
         return tmp_path

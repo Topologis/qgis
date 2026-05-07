@@ -53,6 +53,8 @@ plugins/qgis/
 
 Set `TOPOLOGIS_API_URL` in QGIS's environment to point the plugin at a non-production server, e.g. `TOPOLOGIS_API_URL=http://localhost:5000`.
 
+Set `TOPOLOGIS_DEBUG=1` before launching QGIS to write export diagnostics and tracebacks to the QGIS message log under the `Topologis` tag. Tokens are redacted, but debug logs may include layer names and request metadata.
+
 A symlink is the easiest way to iterate on the plugin without re-copying after every change:
 
 ```bash

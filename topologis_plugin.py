@@ -9,8 +9,8 @@ GeoJSON conversion, network calls, progress reporting - lives in
 import os
 
 from qgis.PyQt.QtGui import QIcon
-from qgis.PyQt.QtWidgets import QAction
 
+from .compat import QAction, exec_dialog
 from .gui.export_dialog import TopologisExportDialog
 
 
@@ -54,4 +54,4 @@ class TopologisPlugin:
     def run(self):
         """Open the modal export dialog. Invoked from the toolbar/menu."""
         dlg = TopologisExportDialog(self.iface.mainWindow())
-        dlg.exec_()
+        exec_dialog(dlg)

@@ -19,6 +19,8 @@ import urllib.parse
 import urllib.request
 from typing import Callable, Tuple
 
+from .debug import debug_log
+
 
 # Connection timeouts (seconds). The POST timeout is short because the API
 # only does cheap bookkeeping; the PUT timeout is longer because S3 uploads
@@ -48,6 +50,10 @@ def post_json(url: str, payload: dict) -> Tuple[int, dict]:
     every call in another try/except.
     """
     data = json.dumps(payload).encode("utf-8")
+    safe_payload = dict(payload)
+    if "token" in safe_payload:
+        safe_payload["token"] = "<redacted>"
+    debug_log(f"POST {url} payload={safe_payload}")
     req = urllib.request.Request(
         url,
         data=data,
@@ -65,12 +71,14 @@ def post_json(url: str, payload: dict) -> Tuple[int, dict]:
         status = e.code
     except urllib.error.URLError as e:
         # DNS failure, connection refused, TLS error, etc. - no response.
+        debug_log(f"POST {url} network error: {e.reason}")
         return 0, {"error": f"Network error: {e.reason}"}
 
     try:
         body = json.loads(body_bytes.decode("utf-8") or "{}")
     except json.JSONDecodeError:
         body = {"error": f"Invalid JSON response (HTTP {status})"}
+    debug_log(f"POST {url} response HTTP {status}: {body}")
     return status, body
 
 
@@ -92,6 +100,7 @@ def put_file_with_progress(
         RuntimeError: The remote returned a non-2xx status.
     """
     parsed = urllib.parse.urlparse(url)
+    debug_log(f"PUT {parsed.scheme}://{parsed.netloc}{parsed.path} from {file_path}")
     if parsed.scheme == "https":
         conn = http.client.HTTPSConnection(parsed.netloc, timeout=_PUT_TIMEOUT_S)
     else:
