@@ -2,7 +2,7 @@
 name=Topologis Exporter
 description=Publish QGIS vector layers as interactive web maps you can share or embed
 about=Publish QGIS vector layers to Topologis as interactive web maps that you can share with clients or embed on a website. Adds a "Publish to Topologis" toolbar button. Supports Point, Line, and Polygon layers with automatic reprojection to EPSG:4326. After upload, style the layers in the Topologis editor and create shareable views. Viewers open links anonymously, no account required. Free trial, no credit card.
-version=1.0.2
+version=1.0.3
 qgisMinimumVersion=3.20.0
 qgisMaximumVersion=4.99
 author=Nikolay Dyankov
@@ -17,6 +17,8 @@ hasProcessingProvider=False
 experimental=False
 deprecated=False
 changelog=
+ 1.0.3
+ - Fixed missing imports
  1.0.2
  - Minor code quality fixes
  1.0.1

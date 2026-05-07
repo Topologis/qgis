@@ -10,8 +10,13 @@ import os
 
 from qgis.PyQt.QtGui import QIcon
 
-from .compat import QAction, exec_dialog
+from .compat import exec_dialog
 from .gui.export_dialog import TopologisExportDialog
+
+try:
+    from qgis.PyQt.QtGui import QAction
+except ImportError:
+    from qgis.PyQt.QtWidgets import QAction
 
 
 # Label shown as a submenu under Web -> &Topologis Exporter. The leading ``&``
