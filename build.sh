@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PACKAGE_NAME="topologis-exporter"
+PACKAGE_NAME="topologis_exporter"
 ZIP_NAME="${PACKAGE_NAME}.zip"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
