@@ -8,8 +8,9 @@ Flow for a single run:
    a. Reproject to EPSG:4326 and write GeoJSON to a temp file.
    b. PUT that file to the presigned URL with progress reporting.
    c. Tell the API the upload landed
-      (``POST /api/public/qgis-create-import-job``) so it can kick off the
-      server-side import job.
+      (``POST /api/public/qgis-create-import-job``), passing the per-layer
+      ``op`` (``"add"`` or ``"replace"``) so the server knows whether to
+      create a new layer or overwrite an existing one matched by name.
 3. Emit ``done`` with a per-layer success/failure summary.
 
 The task runs on a worker thread managed by ``QgsApplication.taskManager``;
@@ -19,7 +20,7 @@ we never touch the GUI directly - the dialog connects to the
 
 import os
 import tempfile
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from qgis.core import (
     QgsCoordinateReferenceSystem,
@@ -56,9 +57,11 @@ class ExportTask(QgsTask):
     progressUpdated = pyqtSignal(int, int, str, int, str)
     done = pyqtSignal()
 
-    def __init__(self, token: str, layers: List[QgsVectorLayer]):
+    def __init__(self, token: str, layers: List[Tuple[QgsVectorLayer, str]]):
         super().__init__("Topologis export", QgsTask.CanCancel)
         self._token = token
+        # Each entry is ``(layer, op)`` where ``op`` is ``"add"`` or
+        # ``"replace"`` and is forwarded to the create-import-job request.
         self._layers = layers
 
         # Per-layer outcome list. Each entry is a dict with keys
@@ -83,7 +86,7 @@ class ExportTask(QgsTask):
             # One round-trip up front to validate the token and reserve a
             # presigned URL per layer. If the token is wrong we want to fail
             # fast, before writing any temp files.
-            names = [layer.name() for layer in self._layers]
+            names = [layer.name() for layer, _op in self._layers]
             status, body = post_json(
                 f"{API_URL}/api/public/qgis-get-urls",
                 {"token": self._token, "names": names},
@@ -100,10 +103,10 @@ class ExportTask(QgsTask):
                 return False
 
             n = len(self._layers)
-            for i, (layer, entry) in enumerate(zip(self._layers, urls)):
+            for i, ((layer, op), entry) in enumerate(zip(self._layers, urls)):
                 if self.isCanceled():
                     break
-                self._process_layer(i, n, layer, entry)
+                self._process_layer(i, n, layer, op, entry)
             return True
         except Cancelled:
             # A cancel during the inner upload loop is not a failure - just
@@ -123,7 +126,7 @@ class ExportTask(QgsTask):
         if not result and self.fatal_error and not self.summary:
             self.summary = [
                 {"layerName": layer.name(), "ok": False, "error": self.fatal_error}
-                for layer in self._layers
+                for layer, _op in self._layers
             ]
         self.done.emit()
 
@@ -131,7 +134,7 @@ class ExportTask(QgsTask):
     # Internals.
     # ------------------------------------------------------------------
 
-    def _process_layer(self, i: int, n: int, layer: QgsVectorLayer, entry: dict):
+    def _process_layer(self, i: int, n: int, layer: QgsVectorLayer, op: str, entry: dict):
         """Export and upload a single layer. Failures are captured in
         ``self.summary`` rather than raised, so one bad layer doesn't abort
         the whole batch."""
@@ -166,7 +169,7 @@ class ExportTask(QgsTask):
             # it from staging to the user's project asynchronously.
             status, body = post_json(
                 f"{API_URL}/api/public/qgis-create-import-job",
-                {"token": self._token, "safeName": safe_name},
+                {"token": self._token, "safeName": safe_name, "op": op},
             )
             if status != 200:
                 self.summary.append({

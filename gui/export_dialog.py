@@ -18,16 +18,19 @@ from qgis.core import (
 from qgis.PyQt.QtCore import Qt
 from qgis.PyQt.QtGui import QPixmap
 from qgis.PyQt.QtWidgets import (
+    QAbstractItemView,
     QApplication,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
-    QListWidget,
-    QListWidgetItem,
     QProgressBar,
     QStyle,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
 )
 
@@ -92,7 +95,15 @@ class TopologisExportDialog(QDialog):
 
         # ---- Layer list -----------------------------------------------------
         layout.addWidget(QLabel("Layers"))
-        self.layer_list = QListWidget(self)
+        self.layer_table = QTableWidget(self)
+        self.layer_table.setColumnCount(2)
+        self.layer_table.setHorizontalHeaderLabels(["Layer", "Operation"])
+        self.layer_table.verticalHeader().setVisible(False)
+        self.layer_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.layer_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.layer_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.layer_table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.layer_table.setShowGrid(False)
         warning_icon = QApplication.style().standardIcon(QStyle.SP_MessageBoxWarning)
 
         # Sort supported (checkable) layers to the top so they're easier to
@@ -100,21 +111,36 @@ class TopologisExportDialog(QDialog):
         layers = list(QgsProject.instance().mapLayers().values())
         layers.sort(key=lambda layer: not _is_supported(layer))
 
-        for layer in layers:
-            item = QListWidgetItem(layer.name(), self.layer_list)
+        self.layer_table.setRowCount(len(layers))
+        for row, layer in enumerate(layers):
+            item = QTableWidgetItem(layer.name())
             # Stash the layer ID rather than a reference: layers can be
             # removed from the project while the dialog is open and we want
             # to fail gracefully when that happens.
             item.setData(Qt.UserRole, layer.id())
             if _is_supported(layer):
-                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                item.setFlags(
+                    Qt.ItemIsUserCheckable | Qt.ItemIsEnabled
+                )
                 item.setCheckState(Qt.Unchecked)
+                self.layer_table.setItem(row, 0, item)
+
+                combo = QComboBox(self.layer_table)
+                combo.addItem("Replace existing", "replace")
+                combo.addItem("Create new", "add")
+                # Combo follows the row's check state - starts disabled
+                # because rows start unchecked.
+                combo.setEnabled(False)
+                self.layer_table.setCellWidget(row, 1, combo)
             else:
                 # Disable the row entirely - tooltip explains why.
                 item.setFlags(Qt.NoItemFlags)
                 item.setIcon(warning_icon)
                 item.setToolTip(UNSUPPORTED_WARNING)
-        layout.addWidget(self.layer_list, 1)
+                self.layer_table.setItem(row, 0, item)
+
+        self.layer_table.itemChanged.connect(self._on_item_changed)
+        layout.addWidget(self.layer_table, 1)
 
         # ---- Token input ----------------------------------------------------
         token_header = QHBoxLayout()
@@ -257,17 +283,30 @@ class TopologisExportDialog(QDialog):
     # ------------------------------------------------------------------
 
     def _collect_selected_layers(self):
-        """Return the currently checked layers, skipping any that have been
-        removed from the project since the dialog opened."""
+        """Return ``(layer, op)`` tuples for the currently checked rows,
+        skipping any layers that have been removed from the project since
+        the dialog opened."""
         project = QgsProject.instance()
         selected = []
-        for i in range(self.layer_list.count()):
-            item = self.layer_list.item(i)
-            if item.checkState() == Qt.Checked:
-                layer = project.mapLayer(item.data(Qt.UserRole))
-                if layer is not None:
-                    selected.append(layer)
+        for row in range(self.layer_table.rowCount()):
+            item = self.layer_table.item(row, 0)
+            if item is None or item.checkState() != Qt.Checked:
+                continue
+            layer = project.mapLayer(item.data(Qt.UserRole))
+            if layer is None:
+                continue
+            combo = self.layer_table.cellWidget(row, 1)
+            op = combo.currentData() if combo is not None else "replace"
+            selected.append((layer, op))
         return selected
+
+    def _on_item_changed(self, item):
+        """Keep each row's op combo enabled only when its layer is checked."""
+        if item.column() != 0:
+            return
+        combo = self.layer_table.cellWidget(item.row(), 1)
+        if combo is not None:
+            combo.setEnabled(item.checkState() == Qt.Checked)
 
     def _show_inline(self, message: str, error: bool = False):
         """Show ``message`` under the layer list, in red if ``error``."""
@@ -279,7 +318,7 @@ class TopologisExportDialog(QDialog):
     def _set_running(self, running: bool):
         """Toggle widgets between idle and busy states."""
         self._task_running = running
-        self.layer_list.setEnabled(not running)
+        self.layer_table.setEnabled(not running)
         self.token_input.setEnabled(not running)
         self.export_button.setEnabled(not running)
         self.cancel_button.setText("Cancel Export" if running else "Close")
