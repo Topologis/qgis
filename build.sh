@@ -30,7 +30,7 @@ copy_file "compat.py"
 copy_file "topologis_plugin.py"
 copy_file "metadata.txt"
 copy_file "README.md"
-copy_file "LICENSE.txt"
+copy_file "LICENSE"
 copy_file "TRADEMARKS.md"
 
 copy_dir "core"

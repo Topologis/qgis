@@ -33,6 +33,8 @@ _PUT_TIMEOUT_S = 60
 # the QGIS progress bar moves visibly.
 _UPLOAD_CHUNK_BYTES = 64 * 1024
 
+_ALLOWED_URL_SCHEMES = {"http", "https"}
+
 
 class Cancelled(Exception):
     """Raised from inside the upload loop when the task is cancelled.
@@ -40,6 +42,14 @@ class Cancelled(Exception):
     The export task catches this to distinguish a user-initiated cancel from
     an actual error.
     """
+
+
+def _parse_http_url(url: str) -> urllib.parse.ParseResult:
+    """Return a parsed URL after rejecting non-HTTP schemes."""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in _ALLOWED_URL_SCHEMES or not parsed.netloc:
+        raise ValueError("URL must use http or https")
+    return parsed
 
 
 def post_json(url: str, payload: dict) -> Tuple[int, dict]:
@@ -54,15 +64,24 @@ def post_json(url: str, payload: dict) -> Tuple[int, dict]:
     if "token" in safe_payload:
         safe_payload["token"] = "<redacted>"
     debug_log(f"POST {url} payload={safe_payload}")
-    req = urllib.request.Request(
-        url,
-        data=data,
-        method="POST",
-        headers={"Content-Type": "application/json"},
-    )
 
     try:
-        with urllib.request.urlopen(req, timeout=_POST_TIMEOUT_S) as resp:
+        _parse_http_url(url)
+        req = urllib.request.Request(
+            url,
+            data=data,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+    except ValueError as e:
+        debug_log(f"POST {url} rejected: {e}")
+        return 0, {"error": str(e)}
+
+    try:
+        with urllib.request.urlopen(  # nosec B310 - URL scheme validated above.
+            req,
+            timeout=_POST_TIMEOUT_S,
+        ) as resp:
             body_bytes = resp.read()
             status = resp.status
     except urllib.error.HTTPError as e:
@@ -99,7 +118,7 @@ def put_file_with_progress(
         Cancelled: The task was cancelled mid-upload.
         RuntimeError: The remote returned a non-2xx status.
     """
-    parsed = urllib.parse.urlparse(url)
+    parsed = _parse_http_url(url)
     debug_log(f"PUT {parsed.scheme}://{parsed.netloc}{parsed.path} from {file_path}")
     if parsed.scheme == "https":
         conn = http.client.HTTPSConnection(parsed.netloc, timeout=_PUT_TIMEOUT_S)

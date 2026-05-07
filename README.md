@@ -66,6 +66,6 @@ Use the Plugin Reloader plugin to pick up changes without restarting QGIS.
 
 ## License
 
-Source code is released under the [GNU GPL v3](LICENSE.txt).
+Source code is released under the [GNU GPL v3](LICENSE).
 
 The Topologis name, wordmark, and logo are trademarks - see [TRADEMARKS.md](TRADEMARKS.md). They are not covered by the GPL.
