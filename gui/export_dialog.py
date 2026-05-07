@@ -375,10 +375,7 @@ class TopologisExportDialog(QDialog):
 def _is_supported(layer) -> bool:
     """Return ``True`` if ``layer`` is a vector layer with a geometry type
     we know how to export."""
-    return (
-        isinstance(layer, QgsVectorLayer)
-        and is_supported_vector_geometry_type(layer.geometryType())
-    )
+    return (isinstance(layer, QgsVectorLayer) and is_supported_vector_geometry_type(layer.geometryType()))
 
 
 class MaskedTokenLineEdit(QLineEdit):

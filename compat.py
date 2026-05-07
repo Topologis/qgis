@@ -14,11 +14,6 @@ from qgis.PyQt.QtWidgets import (
     QStyle,
 )
 
-try:
-    from qgis.PyQt.QtGui import QAction
-except ImportError:
-    from qgis.PyQt.QtWidgets import QAction
-
 
 def _resolve_enum(owner, scoped_path: str, legacy_name: str):
     """Return a Qt6-style scoped enum, falling back to Qt5 legacy spelling."""
@@ -117,7 +112,4 @@ SUPPORTED_VECTOR_GEOMETRY_TYPE_VALUES = {
 
 def is_supported_vector_geometry_type(geometry_type) -> bool:
     """Return whether a QGIS 3/4 geometry type is point, line, or polygon."""
-    return (
-        geometry_type in SUPPORTED_VECTOR_GEOMETRY_TYPES
-        or _enum_value(geometry_type) in SUPPORTED_VECTOR_GEOMETRY_TYPE_VALUES
-    )
+    return (geometry_type in SUPPORTED_VECTOR_GEOMETRY_TYPES or _enum_value(geometry_type) in SUPPORTED_VECTOR_GEOMETRY_TYPE_VALUES)
