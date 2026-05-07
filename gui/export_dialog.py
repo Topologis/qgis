@@ -6,7 +6,10 @@ progress signals into label/progress-bar updates. All long-running work
 happens on a worker thread inside the task.
 """
 
+import base64
+import json
 import os
+import time
 
 from qgis.core import (
     QgsApplication,
@@ -15,7 +18,7 @@ from qgis.core import (
     QgsVectorLayer,
     QgsWkbTypes,
 )
-from qgis.PyQt.QtCore import Qt
+from qgis.PyQt.QtCore import Qt, pyqtSignal
 from qgis.PyQt.QtGui import QPixmap
 from qgis.PyQt.QtWidgets import (
     QAbstractItemView,
@@ -154,11 +157,22 @@ class TopologisExportDialog(QDialog):
         token_header.addWidget(token_help)
         layout.addLayout(token_header)
 
-        self.token_input = QLineEdit(self)
+        self.token_input = MaskedTokenLineEdit(self)
         self.token_input.setPlaceholderText("Paste your import token")
-        # Pre-fill with the token from a previous session if there is one.
-        self.token_input.setText(QgsSettings().value(TOKEN_SETTINGS_KEY, "", type=str))
         layout.addWidget(self.token_input)
+
+        self.token_info = QLabel("", self)
+        self.token_info.setStyleSheet("color: #888; font-size: 11px;")
+        layout.addWidget(self.token_info)
+
+        token_hint = QLabel("Click the field to view or edit your token.", self)
+        token_hint.setStyleSheet("color: #888; font-size: 11px;")
+        layout.addWidget(token_hint)
+
+        # Keep the project/expiry line in sync with the field's real value.
+        self.token_input.realTextChanged.connect(self._update_token_info)
+        # Pre-fill with the token from a previous session if there is one.
+        self.token_input.setRealText(QgsSettings().value(TOKEN_SETTINGS_KEY, "", type=str))
 
         # ---- Status / progress ---------------------------------------------
         self.status_label = QLabel("", self)
@@ -188,7 +202,7 @@ class TopologisExportDialog(QDialog):
 
     def _on_export(self):
         """Validate inputs and start the export task."""
-        token = self.token_input.text().strip()
+        token = self.token_input.realText().strip()
         layers = self._collect_selected_layers()
 
         if not token:
@@ -308,6 +322,30 @@ class TopologisExportDialog(QDialog):
         if combo is not None:
             combo.setEnabled(item.checkState() == Qt.Checked)
 
+    def _update_token_info(self):
+        """Refresh the muted line under the token field with project + expiry."""
+        info = _decode_token_info(self.token_input.realText().strip())
+        if info is None:
+            if self.token_input.realText().strip():
+                self.token_info.setText("Unable to read token info")
+                self.token_info.show()
+            else:
+                self.token_info.clear()
+                self.token_info.hide()
+            return
+
+        project = info["project_name"]
+        days = info["expires_in_days"]
+        if days > 0:
+            tail = f"expires in {days} day" + ("" if days == 1 else "s")
+        elif days == 0:
+            tail = "expires today"
+        else:
+            ago = -days
+            tail = f"expired {ago} day" + ("" if ago == 1 else "s") + " ago"
+        self.token_info.setText(f"Project: {project} · {tail}")
+        self.token_info.show()
+
     def _show_inline(self, message: str, error: bool = False):
         """Show ``message`` under the layer list, in red if ``error``."""
         color = "#c0392b" if error else "#333"
@@ -334,3 +372,80 @@ def _is_supported(layer) -> bool:
         isinstance(layer, QgsVectorLayer)
         and layer.geometryType() in SUPPORTED_GEOMETRY_TYPES
     )
+
+
+class MaskedTokenLineEdit(QLineEdit):
+    """Line edit that hides its contents behind a fixed-width star mask.
+
+    The mask is the same shape regardless of the underlying token's length,
+    so the field reveals nothing about the token - not even its size.
+    Clicking the field swaps the mask for the real value so it stays
+    editable. ``realTextChanged`` fires whenever the stored value changes
+    (initial set or after a focused edit commits) so consumers can refresh
+    derived UI like a project/expiry hint.
+    """
+
+    MASKED_DISPLAY = "*" * 16
+
+    realTextChanged = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._real_text = ""
+
+    def setRealText(self, text: str):
+        self._real_text = text or ""
+        self._render()
+        self.realTextChanged.emit(self._real_text)
+
+    def realText(self) -> str:
+        # While focused, the visible text *is* the real text - the user may
+        # be mid-edit, so trust the widget over the cached copy.
+        if self.hasFocus():
+            return super().text()
+        return self._real_text
+
+    def focusInEvent(self, event):
+        super().setText(self._real_text)
+        super().focusInEvent(event)
+        # Place the cursor at the end so paste-over-select still works
+        # naturally; selecting all here would be hostile to partial edits.
+        self.end(False)
+
+    def focusOutEvent(self, event):
+        self._real_text = super().text()
+        self._render()
+        super().focusOutEvent(event)
+        self.realTextChanged.emit(self._real_text)
+
+    def _render(self):
+        if self.hasFocus() or not self._real_text:
+            super().setText(self._real_text)
+        else:
+            super().setText(self.MASKED_DISPLAY)
+
+
+def _decode_token_info(token: str):
+    """Best-effort decode of a JWT payload (no signature verification).
+
+    Returns ``{"project_name": str, "expires_in_days": int}`` for a parseable
+    token carrying both ``projectName`` and ``exp`` claims, or ``None`` for
+    anything else. The same fallback covers every failure mode (not a JWT,
+    bad base64, bad JSON, missing claims) - the UI doesn't distinguish them.
+    """
+    if not token:
+        return None
+    try:
+        parts = token.split(".")
+        if len(parts) != 3:
+            return None
+        payload_b64 = parts[1]
+        # JWT uses base64url with no padding; pad up to a multiple of 4.
+        padding = "=" * (-len(payload_b64) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64 + padding))
+        project_name = payload["projectName"]
+        exp = payload["exp"]
+        expires_in_days = int((float(exp) - time.time()) // 86400)
+        return {"project_name": str(project_name), "expires_in_days": expires_in_days}
+    except Exception:
+        return None

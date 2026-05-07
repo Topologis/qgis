@@ -14,10 +14,10 @@ from qgis.PyQt.QtWidgets import QAction
 from .gui.export_dialog import TopologisExportDialog
 
 
-# Label shown under Plugins -> &Topologis. The leading ``&`` sets the keyboard
-# accelerator; QGIS strips it from the visible text.
-MENU_LABEL = "&Topologis"
-ACTION_TEXT = "Publish to Topologis"
+# Label shown as a submenu under Web -> &Topologis Exporter. The leading ``&``
+# sets the keyboard accelerator; QGIS strips it from the visible text.
+MENU_LABEL = "&Topologis Exporter"
+ACTION_TEXT = "Publish to Topologis…"
 ICON_RELATIVE_PATH = os.path.join("resources", "icons", "icon.png")
 
 
@@ -38,7 +38,7 @@ class TopologisPlugin:
         self.action = QAction(icon, ACTION_TEXT, self.iface.mainWindow())
         self.action.triggered.connect(self.run)
 
-        self.iface.addPluginToMenu(MENU_LABEL, self.action)
+        self.iface.addPluginToWebMenu(MENU_LABEL, self.action)
         self.iface.addToolBarIcon(self.action)
 
     def unload(self):
@@ -48,7 +48,7 @@ class TopologisPlugin:
         not duplicate menu entries or leave stale icons in the toolbar.
         """
         if self.action:
-            self.iface.removePluginMenu(MENU_LABEL, self.action)
+            self.iface.removePluginWebMenu(MENU_LABEL, self.action)
             self.iface.removeToolBarIcon(self.action)
 
     def run(self):
