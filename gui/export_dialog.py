@@ -56,12 +56,13 @@ from ..core.api import request_anonymous_session
 from ..core.config import API_URL
 from ..core.export_task import ExportTask
 
-
 # Resource paths are resolved relative to the plugin root, which is the
 # parent of this ``gui/`` package.
 _PLUGIN_DIR = os.path.dirname(os.path.dirname(__file__))
 _HEADER_LIGHT_PATH = os.path.join(_PLUGIN_DIR, "resources", "icons", "qgis-header.png")
-_HEADER_DARK_PATH = os.path.join(_PLUGIN_DIR, "resources", "icons", "qgis-header-dark.png")
+_HEADER_DARK_PATH = os.path.join(
+    _PLUGIN_DIR, "resources", "icons", "qgis-header-dark.png"
+)
 # Last-resort fallback if the bundled headers are stripped (e.g. forks that
 # remove the wordmark for trademark reasons) - the toolbar icon is generic.
 _ICON_FALLBACK_PATH = os.path.join(_PLUGIN_DIR, "resources", "icons", "icon.png")
@@ -83,6 +84,30 @@ TOKEN_SETTINGS_KEY = "topologis/import_token"
 # Whether to open the resulting view in a browser after a successful export.
 # Stored separately so it survives across sessions independently of the token.
 OPEN_IN_BROWSER_SETTINGS_KEY = "topologis/open_in_browser"
+
+# Anonymous-session token + session id cached after a successful Preview
+# mint, reused on subsequent Preview clicks until the JWT's ``exp`` has
+# passed. Cleared on server rejection. The pasted-token (Export) flow
+# never reads or writes these keys.
+ANON_TOKEN_SETTINGS_KEY = "topologis/anonymous_token"
+ANON_SESSION_SETTINGS_KEY = "topologis/anonymous_session"
+
+# Treat a cached token as expired if ``exp`` is within this many seconds
+# of now, so we don't hand the server a token that expires mid-request.
+_ANON_TOKEN_EXP_SKEW_SECONDS = 30
+
+# Copy shown in the info box under the (empty) token field. Two variants:
+# one for the first Preview (no cached session yet) and one for follow-up
+# Previews where a cached anonymous session is still valid. Edit freely;
+# HTML is supported (the label has ``setOpenExternalLinks(True)``).
+PREVIEW_INFO_NO_CACHE = (
+    "We'll create an anonymous account for you.&nbsp;To keep your data and access it later,&nbsp;sign up and "
+    f'<a href="{DOCS_TOKEN_URL}">get a token</a>.'
+)
+PREVIEW_INFO_CACHED = (
+    "Your data will be imported into your anonymous account.&nbsp;To keep your data and access it later,&nbsp;sign up and "
+    f'<a href="{DOCS_TOKEN_URL}">get a token</a>.'
+)
 
 
 class TopologisExportDialog(QDialog):
@@ -114,6 +139,11 @@ class TopologisExportDialog(QDialog):
         # appended to the preview URL as ``?session=...`` after a successful
         # export so the view can find the right anonymous bucket.
         self._active_session = None
+        # True when the in-flight ExportTask is running with a token loaded
+        # from the QSettings anonymous-session cache. Lets ``_on_task_done``
+        # decide whether a ``fatal_error`` means we should invalidate the
+        # cache and auto-retry with a freshly minted session.
+        self._used_cached_anonymous = False
 
         layout = QVBoxLayout(self)
 
@@ -121,7 +151,9 @@ class TopologisExportDialog(QDialog):
         # Pick a header variant matching the active QGIS theme so the wordmark
         # stays legible against both light and dark backgrounds.
         logo_label = QLabel(self)
-        logo_label.setPixmap(QPixmap(_pick_header_path(self.palette())).scaledToHeight(32))
+        logo_label.setPixmap(
+            QPixmap(_pick_header_path(self.palette())).scaledToHeight(32)
+        )
         logo_label.setAlignment(QT_ALIGN_LEFT)
         logo_label.setContentsMargins(0, 0, 0, 10)
         layout.addWidget(logo_label)
@@ -133,7 +165,9 @@ class TopologisExportDialog(QDialog):
         self.layer_table.setHorizontalHeaderLabels(["Layer", "Operation"])
         self.layer_table.verticalHeader().setVisible(False)
         self.layer_table.horizontalHeader().setSectionResizeMode(0, QHEADER_STRETCH)
-        self.layer_table.horizontalHeader().setSectionResizeMode(1, QHEADER_RESIZE_TO_CONTENTS)
+        self.layer_table.horizontalHeader().setSectionResizeMode(
+            1, QHEADER_RESIZE_TO_CONTENTS
+        )
         self.layer_table.setEditTriggers(QABSTRACT_NO_EDIT_TRIGGERS)
         self.layer_table.setSelectionMode(QABSTRACT_NO_SELECTION)
         self.layer_table.setShowGrid(False)
@@ -152,9 +186,7 @@ class TopologisExportDialog(QDialog):
             # to fail gracefully when that happens.
             item.setData(QT_USER_ROLE, layer.id())
             if _is_supported(layer):
-                item.setFlags(
-                    QT_ITEM_IS_USER_CHECKABLE | QT_ITEM_IS_ENABLED
-                )
+                item.setFlags(QT_ITEM_IS_USER_CHECKABLE | QT_ITEM_IS_ENABLED)
                 item.setCheckState(QT_UNCHECKED)
                 self.layer_table.setItem(row, 0, item)
 
@@ -201,12 +233,11 @@ class TopologisExportDialog(QDialog):
 
         # Shown only while the token field is empty - explains that the
         # Preview path produces a temporary export and links to the docs
-        # for users who want a permanent project token instead.
-        self.token_info_box = QLabel(
-            "Without a token, exports are temporary and will be removed "
-            f'after a few days. <a href="{DOCS_TOKEN_URL}">How do I get a token?</a>',
-            self,
-        )
+        # for users who want a permanent project token instead. The text
+        # itself is swapped by ``_sync_token_dependent_ui`` based on whether
+        # a cached anonymous session is available; the constant here is
+        # just the initial placeholder before that runs.
+        self.token_info_box = QLabel(PREVIEW_INFO_NO_CACHE, self)
         self.token_info_box.setOpenExternalLinks(True)
         self.token_info_box.setWordWrap(True)
         self.token_info_box.setStyleSheet(
@@ -218,7 +249,9 @@ class TopologisExportDialog(QDialog):
         # Keep the project/expiry line in sync with the field's real value.
         self.token_input.realTextChanged.connect(self._update_token_info)
         # Pre-fill with the token from a previous session if there is one.
-        self.token_input.setRealText(QgsSettings().value(TOKEN_SETTINGS_KEY, "", type=str))
+        self.token_input.setRealText(
+            QgsSettings().value(TOKEN_SETTINGS_KEY, "", type=str)
+        )
 
         # ---- Status / progress ---------------------------------------------
         self.status_label = QLabel("", self)
@@ -291,26 +324,47 @@ class TopologisExportDialog(QDialog):
             self._show_inline("Select at least one layer.", error=True)
             return
 
+        # Reset the cache-hit flag for this attempt; only the cached-Preview
+        # branch flips it to True. Pasted-token runs and freshly-minted
+        # Preview runs both leave it False so ``_on_task_done`` won't try
+        # to auto-refresh.
+        self._used_cached_anonymous = False
+
         pasted = self.token_input.realText().strip()
         active_session = None
         if pasted:
             # Export mode: use the pasted token and persist it for next run.
+            # The anonymous-session cache is intentionally not consulted or
+            # touched here - a pasted token wins outright.
             QgsSettings().setValue(TOKEN_SETTINGS_KEY, pasted)
             active_token = pasted
         else:
-            # Preview mode: GET a one-off session token. Block the buttons
-            # for the duration so the dialog can't be re-entered while the
-            # network round-trip is in flight.
-            self._set_buttons_enabled(False)
-            self._show_inline("Starting anonymous session...")
-            # Force the disabled state + status message to repaint before
-            # the synchronous GET blocks the UI thread.
-            QApplication.processEvents()
-            active_token, active_session, error = request_anonymous_session()
-            self._set_buttons_enabled(True)
-            if error:
-                self._show_inline(error, error=True)
-                return
+            # Preview mode: try the QSettings cache first; on a miss
+            # (expired/absent) fall back to a fresh /anonymous-session mint
+            # and persist the result for the next click.
+            cached_token, cached_session = _load_cached_anonymous_session()
+            if cached_token and cached_session:
+                active_token = cached_token
+                active_session = cached_session
+                self._used_cached_anonymous = True
+            else:
+                # No cache (or expired): GET a one-off session token. Block
+                # the buttons for the duration so the dialog can't be
+                # re-entered while the network round-trip is in flight.
+                self._set_buttons_enabled(False)
+                self._show_inline("Starting anonymous session...")
+                # Force the disabled state + status message to repaint before
+                # the synchronous GET blocks the UI thread.
+                QApplication.processEvents()
+                active_token, active_session, error = request_anonymous_session()
+                self._set_buttons_enabled(True)
+                if error:
+                    self._show_inline(error, error=True)
+                    return
+                _store_cached_anonymous_session(active_token, active_session or "")
+                # Cache just gained a fresh entry; refresh the info-box copy
+                # so the swap is visible if the user returns to this dialog.
+                self._sync_token_dependent_ui()
 
         self._active_token = active_token
         self._active_session = active_session
@@ -327,10 +381,14 @@ class TopologisExportDialog(QDialog):
         self._task.done.connect(self._on_task_done)
         QgsApplication.taskManager().addTask(self._task)
 
-    def _on_progress(self, current: int, total: int, layer_name: str, pct: int, phase: str):
+    def _on_progress(
+        self, current: int, total: int, layer_name: str, pct: int, phase: str
+    ):
         """Render an inline status string for the current layer's progress."""
         suffix = "preparing..." if phase == "preparing" else f"{pct}%"
-        self.status_label.setText(f"Importing layer {current}/{total}: {layer_name} ({suffix})")
+        self.status_label.setText(
+            f"Importing layer {current}/{total}: {layer_name} ({suffix})"
+        )
         if self._task is not None:
             # ``QgsTask.progress()`` returns the overall 0..100 percentage we
             # set inside the task; mirror it here for the inline progress bar.
@@ -342,14 +400,36 @@ class TopologisExportDialog(QDialog):
         self._task = None
         active_token = self._active_token
         active_session = self._active_session
+        used_cached = self._used_cached_anonymous
         # Always clear the active token/session so the next Preview click
         # mints fresh values and a follow-up Export doesn't reuse stale state.
+        # The QSettings cache is independent and only cleared on the
+        # rejection path below.
         self._active_token = None
         self._active_session = None
+        self._used_cached_anonymous = False
         self._set_running(False)
         self.progress_bar.hide()
 
         if task is None:
+            return
+
+        # Auto-refresh on cached-token rejection: if this run used a token
+        # from the QSettings anonymous cache and the server returned a
+        # ``fatal_error`` (token revoked / expired server-side / any blocking
+        # response from qgis-get-urls), drop the cache and transparently
+        # re-run with a freshly minted session. Gated by ``used_cached`` so
+        # we retry at most once per click - the re-entered ``_on_action``
+        # sees an empty cache and runs the fresh-mint branch, which leaves
+        # ``_used_cached_anonymous`` False on its way back here.
+        if used_cached and task.fatal_error and not task.isCanceled():
+            _clear_cached_anonymous_session()
+            # Cache just dropped; let the info-box copy reflect that before
+            # we re-enter ``_on_action`` (which will mint a fresh session).
+            self._sync_token_dependent_ui()
+            self._show_inline("Refreshing anonymous session...")
+            QApplication.processEvents()
+            self._on_action()
             return
 
         summary = task.summary
@@ -502,7 +582,9 @@ class TopologisExportDialog(QDialog):
 
     def _sync_token_dependent_ui(self, *_):
         """Flip the action button label and toggle the info box based on
-        whether the token field currently holds anything.
+        whether the token field currently holds anything. When the field is
+        empty, also pick the info-box copy variant that matches the current
+        cache state (cached preview available vs. fresh mint required).
 
         Accepts and ignores positional args so the same slot can be wired
         to both ``textChanged(str)`` and ``realTextChanged(str)``.
@@ -510,6 +592,12 @@ class TopologisExportDialog(QDialog):
         has_token = bool(self.token_input.realText().strip())
         self.action_button.setText("Export" if has_token else "Preview")
         self.token_info_box.setVisible(not has_token)
+        if not has_token:
+            cached_token, cached_session = _load_cached_anonymous_session()
+            if cached_token and cached_session:
+                self.token_info_box.setText(PREVIEW_INFO_CACHED)
+            else:
+                self.token_info_box.setText(PREVIEW_INFO_NO_CACHE)
 
 
 def _pick_header_path(palette) -> str:
@@ -532,7 +620,9 @@ def _pick_header_path(palette) -> str:
 def _is_supported(layer) -> bool:
     """Return ``True`` if ``layer`` is a vector layer with a geometry type
     we know how to export."""
-    return (isinstance(layer, QgsVectorLayer) and is_supported_vector_geometry_type(layer.geometryType()))
+    return isinstance(layer, QgsVectorLayer) and is_supported_vector_geometry_type(
+        layer.geometryType()
+    )
 
 
 class MaskedTokenLineEdit(QLineEdit):
@@ -629,3 +719,41 @@ def _decode_view_id(token: str):
         return None
     view_id = payload.get("viewId")
     return str(view_id) if view_id else None
+
+
+def _load_cached_anonymous_session():
+    """Return ``(token, session)`` from QSettings if both are present and
+    the JWT ``exp`` is still comfortably in the future. Any miss - empty
+    keys, partial cache, unreadable token, missing/past ``exp`` - returns
+    ``(None, None)`` so the caller mints a fresh session."""
+    settings = QgsSettings()
+    token = settings.value(ANON_TOKEN_SETTINGS_KEY, "", type=str)
+    session = settings.value(ANON_SESSION_SETTINGS_KEY, "", type=str)
+    if not token or not session:
+        return None, None
+    payload = _decode_jwt_payload(token)
+    if not payload:
+        return None, None
+    try:
+        exp = float(payload["exp"])
+    except (KeyError, ValueError, TypeError):
+        return None, None
+    if exp - time.time() < _ANON_TOKEN_EXP_SKEW_SECONDS:
+        return None, None
+    return token, session
+
+
+def _store_cached_anonymous_session(token: str, session: str):
+    """Persist a freshly minted ``(token, session)`` pair so the next
+    Preview click can skip the ``/anonymous-session`` round-trip."""
+    settings = QgsSettings()
+    settings.setValue(ANON_TOKEN_SETTINGS_KEY, token or "")
+    settings.setValue(ANON_SESSION_SETTINGS_KEY, session or "")
+
+
+def _clear_cached_anonymous_session():
+    """Drop the cached anonymous session - called when the server
+    rejects a previously cached token."""
+    settings = QgsSettings()
+    settings.remove(ANON_TOKEN_SETTINGS_KEY)
+    settings.remove(ANON_SESSION_SETTINGS_KEY)
