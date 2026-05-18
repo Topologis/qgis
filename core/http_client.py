@@ -4,8 +4,9 @@ We deliberately stick to the Python standard library (``urllib`` /
 ``http.client``) instead of pulling in ``requests``: QGIS bundles its own
 Python and we don't want to ship third-party dependencies inside a plugin zip.
 
-Two helpers are exposed:
+Three helpers are exposed:
 
+* :func:`get_json` - blocking GET with a JSON response.
 * :func:`post_json` - blocking POST with a JSON body and a JSON response.
 * :func:`put_file_with_progress` - chunked PUT used for the S3 presigned upload,
   with progress callbacks and cooperative cancellation.
@@ -50,6 +51,44 @@ def _parse_http_url(url: str) -> urllib.parse.ParseResult:
     if parsed.scheme not in _ALLOWED_URL_SCHEMES or not parsed.netloc:
         raise ValueError("URL must use http or https")
     return parsed
+
+
+def get_json(url: str) -> Tuple[int, dict]:
+    """GET ``url`` and return ``(status, parsed_body)``.
+
+    Mirrors :func:`post_json`'s error contract: network failures come back as
+    ``(0, {"error": ...})`` so callers can treat them like HTTP error bodies
+    instead of wrapping every call in another try/except.
+    """
+    debug_log(f"GET {url}")
+
+    try:
+        _parse_http_url(url)
+        req = urllib.request.Request(url, method="GET")
+    except ValueError as e:
+        debug_log(f"GET {url} rejected: {e}")
+        return 0, {"error": str(e)}
+
+    try:
+        with urllib.request.urlopen(  # nosec B310 - URL scheme validated above.
+            req,
+            timeout=_POST_TIMEOUT_S,
+        ) as resp:
+            body_bytes = resp.read()
+            status = resp.status
+    except urllib.error.HTTPError as e:
+        body_bytes = e.read()
+        status = e.code
+    except urllib.error.URLError as e:
+        debug_log(f"GET {url} network error: {e.reason}")
+        return 0, {"error": f"Network error: {e.reason}"}
+
+    try:
+        body = json.loads(body_bytes.decode("utf-8") or "{}")
+    except json.JSONDecodeError:
+        body = {"error": f"Invalid JSON response (HTTP {status})"}
+    debug_log(f"GET {url} response HTTP {status}: {body}")
+    return status, body
 
 
 def post_json(url: str, payload: dict) -> Tuple[int, dict]:

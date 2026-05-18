@@ -7,6 +7,7 @@ focused on behavior instead of runtime-version branching.
 
 from qgis.core import Qgis, QgsTask, QgsVectorFileWriter, QgsWkbTypes
 from qgis.PyQt.QtCore import Qt
+from qgis.PyQt.QtGui import QPalette
 from qgis.PyQt.QtWidgets import (
     QAbstractItemView,
     QDialogButtonBox,
@@ -69,6 +70,8 @@ QDIALOG_CANCEL = _resolve_enum(QDialogButtonBox, "StandardButton.Cancel", "Cance
 QDIALOG_ACCEPT_ROLE = _resolve_enum(
     QDialogButtonBox, "ButtonRole.AcceptRole", "AcceptRole"
 )
+
+QPALETTE_WINDOW = _resolve_enum(QPalette, "ColorRole.Window", "Window")
 
 QGIS_INFO_LEVEL = _resolve_enum(Qgis, "MessageLevel.Info", "Info")
 QGSTASK_CAN_CANCEL = _resolve_enum(QgsTask, "Flag.CanCancel", "CanCancel")
